@@ -1,9 +1,13 @@
 name: "experimental"
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - android-native-runtime
 
 jobs:
   build-tauri:
+    if: github.event_name == 'workflow_dispatch'
     strategy:
       fail-fast: false
       matrix:
@@ -71,7 +75,6 @@ jobs:
             echo "No .app found in $MACOS_BUNDLE_DIR"
             exit 1
           fi
-          APP_NAME=$(basename "$APP_PATH")
           pkgbuild --root "$APP_PATH/.." \
                    --install-location /Applications \
                    --scripts pkg_temp/scripts \
@@ -88,6 +91,7 @@ jobs:
             src-tauri/target/**/release/bundle/**/*
 
   build-flatpak:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     container:
       image: bilelmoussaoui/flatpak-github-actions:freedesktop-23.08
@@ -110,6 +114,7 @@ jobs:
           path: Emerald.Legacy.Launcher.flatpak
 
   build-appimage:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     container:
       image: archlinux:latest
@@ -172,8 +177,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: true
+
       - name: setup pnpm
         uses: pnpm/action-setup@v4
         with:
@@ -196,7 +200,6 @@ jobs:
         run: |
           sdkmanager --install "platforms;android-36" "build-tools;36.0.0" "ndk;28.2.13676358"
           yes | sdkmanager --licenses
-          sudo apt-get install -y glslang-tools
 
       - name: install Rust stable with android target
         uses: dtolnay/rust-toolchain@stable
@@ -211,36 +214,53 @@ jobs:
       - name: install frontend dependencies
         run: pnpm install
 
-      - name: download android bundled assets
-        run: pnpm android:assets
-
       - name: restore gradle wrapper jar
         run: |
           VER=$(sed -n 's/.*gradle-\([0-9][0-9.]*\)-bin\.zip.*/\1/p' src-tauri/gen/android/gradle/wrapper/gradle-wrapper.properties)
           curl -fL -o src-tauri/gen/android/gradle/wrapper/gradle-wrapper.jar \
             "https://raw.githubusercontent.com/gradle/gradle/v${VER}/gradle/wrapper/gradle-wrapper.jar"
 
-      - name: set up android signing keystore
+      - name: check native LCE runtime
+        run: |
+          RUNTIME="src-tauri/gen/android/app/src/main/jniLibs/arm64-v8a/libMinecraftClient.so"
+          if [ -f "$RUNTIME" ]; then
+            echo "Native ARM64 LCE runtime found: $RUNTIME"
+          else
+            echo "::warning::Native ARM64 LCE runtime is not bundled yet. The APK will build, but Play will show a native-runtime-missing message instead of falling back to Wine/Proton."
+          fi
+
+      - name: configure Android signing when secrets are available
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
-          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 -d > src-tauri/gen/android/app/release.keystore
-          cat > src-tauri/gen/android/app/key.properties <<EOF
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ] && [ -n "$ANDROID_KEYSTORE_PASSWORD" ] && [ -n "$ANDROID_KEY_ALIAS" ]; then
+            printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 -d > src-tauri/gen/android/app/release.keystore
+            cat > src-tauri/gen/android/app/key.properties <<EOF
           keyAlias=$ANDROID_KEY_ALIAS
           keyPassword=$ANDROID_KEYSTORE_PASSWORD
           storeFile=release.keystore
           storePassword=$ANDROID_KEYSTORE_PASSWORD
           EOF
+            echo "ANDROID_SIGNED_BUILD=1" >> "$GITHUB_ENV"
+          else
+            echo "ANDROID_SIGNED_BUILD=0" >> "$GITHUB_ENV"
+          fi
 
       - name: build Android APK
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/28.2.13676358
           NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/28.2.13676358
-        run: npx tauri android build --target aarch64
+        run: |
+          if [ "$ANDROID_SIGNED_BUILD" = "1" ]; then
+            npx tauri android build --target aarch64
+          else
+            npx tauri android build --debug --target aarch64
+          fi
+
       - name: upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: android-apk
-          path: src-tauri/gen/android/app/build/outputs/apk/universal/release/*.apk
+          name: android-native-apk
+          path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
