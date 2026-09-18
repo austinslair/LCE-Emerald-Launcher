@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - android-native-runtime
+  pull_request:
+    branches:
+      - main
 
 jobs:
   build-tauri:
