@@ -18,24 +18,35 @@ pub fn launch_bridge(
         use jni::sys::jint;
         use jni::JNIEnv;
         use wry::prelude::{dispatch, find_class};
-        fn start_bridge(
+
+        if !matches!(action, BridgeAction::Play) {
+            return Err(
+                "This Android build uses a native ARM64 game runtime. Container, Proton, "
+                    .to_string()
+                    + "driver, and compatibility-layer controls are not available.",
+            );
+        }
+
+        fn start_native_game(
             env: &mut JNIEnv,
             activity: &JObject,
-            action: &str,
             instance_path: &str,
             extra_args: &[String],
         ) -> jni::errors::Result<()> {
-            let bridge_class =
-                find_class(env, activity, "dev.lcehub.emerald.LauncherBridgeActivity".to_string())?;
+            let launcher_class = find_class(
+                env,
+                activity,
+                "com.emerald.legacy.NativeGameLauncherActivity".to_string(),
+            )?;
             let intent_class = env.find_class("android/content/Intent")?;
             let intent = env.new_object(
                 intent_class,
-                "(Landroid/content/Context;Ljava/lang/Class;)V", //neo: i hate smali so much
-                &[(&activity).into(), (&bridge_class).into()],
+                "(Landroid/content/Context;Ljava/lang/Class;)V",
+                &[(&activity).into(), (&launcher_class).into()],
             )?;
 
             let extra_action = env.new_string("launcher_action")?;
-            let action_str = env.new_string(action)?;
+            let action_str = env.new_string("play")?;
             env.call_method(
                 &intent,
                 "putExtra",
@@ -66,7 +77,7 @@ pub fn launch_bridge(
                 &intent,
                 "addFlags",
                 "(I)Landroid/content/Intent;",
-                &[JValue::Int(0x10000000 as jint)], //neo: FLAG_ACTIVITY_NEW_TASK
+                &[JValue::Int(0x10000000 as jint)],
             )?;
 
             env.call_method(
@@ -79,18 +90,9 @@ pub fn launch_bridge(
             Ok(())
         }
 
-        let action_str = match action {
-            BridgeAction::Play => "play",
-            BridgeAction::OpenContainer => "open",
-            BridgeAction::OpenSettings => "settings",
-            BridgeAction::SwitchProton => "switch_proton",
-            BridgeAction::InstallDriver => "install_driver",
-            BridgeAction::SetAudioBackend => "set_audio_backend",
-        }
-        .to_string();
         dispatch(move |env, activity, _webview| {
-            if let Err(e) = start_bridge(env, activity, &action_str, &instance_path, &extra_args) {
-                eprintln!("[android_bridge] failed to start activity: {e}");
+            if let Err(e) = start_native_game(env, activity, &instance_path, &extra_args) {
+                eprintln!("[android_native] failed to start native game activity: {e}");
             }
         });
 
